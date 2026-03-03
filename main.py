@@ -21,21 +21,23 @@ class CartRequest(BaseModel):
 
 
 def require_api_key(
-    x_api_key: str | None = Header(default=None, alias="x-api-key"),
     authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ):
     if not API_KEY:
         raise HTTPException(status_code=500, detail="Server API key is not configured (VV_API_KEY)")
 
     token = None
-    if x_api_key:
-        token = x_api_key
-    elif authorization:
+
+    # 1) Принимаем Bearer токен (то, что GPT умеет стабильно отправлять)
+    if authorization:
         low = authorization.lower()
         if low.startswith("bearer "):
             token = authorization[7:].strip()
-        elif low.startswith("basic "):
-            token = authorization[6:].strip()
+
+    # 2) Оставляем поддержку x-api-key (на всякий)
+    if not token and x_api_key:
+        token = x_api_key
 
     if token != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
