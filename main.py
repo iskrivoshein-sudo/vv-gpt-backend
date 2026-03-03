@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 from typing import List, Any, Dict
 import httpx
 import json
+import os
 
 VV_MCP = "https://mcp001.vkusvill.ru/mcp"
+API_KEY = os.getenv("VV_API_KEY")  # задаётся в Render
 
 app = FastAPI(title="VkusVill Cart Link API", version="1.0.0")
 
@@ -16,6 +18,14 @@ class CartItem(BaseModel):
 
 class CartRequest(BaseModel):
     items: List[CartItem]
+
+
+def require_api_key(x_api_key: str | None = Header(default=None, alias="x-api-key")):
+    # Если ключ не задан в окружении — считаем, что сервер неправильно настроен
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Server API key is not configured (VV_API_KEY)")
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 async def mcp_init(client: httpx.AsyncClient) -> str:
@@ -50,11 +60,6 @@ async def mcp_init(client: httpx.AsyncClient) -> str:
 
 
 def _extract_text_json(mcp_result: Any) -> Any:
-    """
-    VkusVill MCP часто возвращает результат в формате:
-    {"content":[{"type":"text","text":"{...json...}"}]}
-    Здесь мы пытаемся распарсить этот text как JSON.
-    """
     if isinstance(mcp_result, dict) and isinstance(mcp_result.get("content"), list) and mcp_result["content"]:
         first = mcp_result["content"][0]
         if isinstance(first, dict) and first.get("type") == "text" and isinstance(first.get("text"), str):
@@ -88,7 +93,7 @@ async def mcp_tool_call(tool_name: str, arguments: Dict[str, Any]) -> Any:
 
 
 @app.get("/vv/search")
-async def vv_search(q: str, page: int = 1, sort: str = "popularity"):
+async def vv_search(q: str, page: int = 1, sort: str = "popularity", _: None = Depends(require_api_key)):
     try:
         res = await mcp_tool_call("vkusvill_products_search", {"q": q, "page": page, "sort": sort})
         return _extract_text_json(res)
@@ -97,12 +102,11 @@ async def vv_search(q: str, page: int = 1, sort: str = "popularity"):
 
 
 @app.post("/vv/cart-link")
-async def vv_cart_link(req: CartRequest):
+async def vv_cart_link(req: CartRequest, _: None = Depends(require_api_key)):
     try:
         products = [{"xml_id": i.xml_id, "q": float(i.quantity)} for i in req.items]
         res = await mcp_tool_call("vkusvill_cart_link_create", {"products": products})
         parsed = _extract_text_json(res)
-        # если там прямо {"link":"https://vkusvill.ru/?share_basket=..."}
         if isinstance(parsed, dict) and "link" in parsed:
             return {"link": parsed["link"]}
         return parsed
